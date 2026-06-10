@@ -1,6 +1,6 @@
-# 图像反射去除课程项目执行方案 v0.1
+# 图像反射去除课程项目执行方案 v0.2
 
-依据文件：`docs/2026-DIP课程项目-RR.pptx`、`README_DIP26.md`、当前 ERRNet 代码仓库。
+依据文件：`docs/2026-DIP课程项目-RR.pptx`、`README_DIP26.md`、当前 ERRNet 代码仓库、`workspace/RR_literature_survey.md`。
 
 DDL：2026-06-16 17:00，邮件发送至 `qxiang24@m.fudan.edu.cn`，主题 `DIP课程论文-学号-姓名`。
 
@@ -50,8 +50,9 @@ DDL：2026-06-16 17:00，邮件发送至 `qxiang24@m.fudan.edu.cn`，主题 `DIP
 
 3. 实现轻量改进方法
    - 不换大模型，不引入扩散/Transformer 等显著增加训练成本的方法。
-   - 在 ERRNet 的训练目标上加入反射层平滑先验与边缘保持约束，命名为 `ERRNet-RS`（Reflection-Smoothness ERRNet）。
-   - 改进只增加少量损失项，可从 ERRNet checkpoint 直接加载并 finetune，符合“禁止使用过多显卡”的限制。
+   - 基于 DSRNet、IBCLN、Beyond Linearity、Absorption Effect 和 Physically-Based Training Images 的调查结果，将最终改进方法确定为 `ERRNet-R3Lite`。
+   - 改进方向为：ERRNet 主干 + reflection 辅助分支 + learnable residual reconstruction + 非线性/物理启发合成增强。
+   - 本地 RTX 5070 Ti 16G 支持 improved 从头训练；同时保留从 baseline checkpoint 局部加载/finetune 的备选路径。
 
 4. 做统一评测和可视化
    - 同一测试集、同一 resize/预处理、同一指标函数。
@@ -61,72 +62,121 @@ DDL：2026-06-16 17:00，邮件发送至 `qxiang24@m.fudan.edu.cn`，主题 `DIP
    - 论文强调方法动机、轻量改进、训练成本、定量/定性分析。
    - PPT 控制为 8-12 页，覆盖背景、baseline、改进、实验、结论。
 
-## 4. 改进方法设计：ERRNet-RS
+## 4. 改进方法设计：ERRNet-R3Lite
 
 ### 4.1 动机
 
-反射去除可近似看作图像分层：
+文献调查见 `workspace/RR_literature_survey.md`。调查后不再采用上一版单纯 residual smoothness 的 `ERRNet-RS`，原因是它缺少对近年工作的直接对应。后续方法更强调三个方向：
 
-`I = T + R`
+- DSRNet：用更一般的 superposition model 和 learnable residue term 捕获简单线性叠加无法表示的残差信息。
+- IBCLN：通过 cascaded refinement 和 residual reconstruction 约束逐步改善 transmission/reflection 分离。
+- Beyond Linearity、Absorption Effect、Physically-Based Training Images：真实玻璃反射不是简单 `T + blur(R)`，训练合成需要考虑非线性、空间变化、吸收、ghosting、defocus 等因素。
 
-其中 `I` 是输入混合图，`T` 是透射层，`R` 是反射层。传统方法通常假设透射层保留较清晰边缘，而反射层更模糊、更平滑。ERRNet 已使用 VGG hypercolumn、通道注意力、多尺度空间上下文和 misaligned loss；本项目在不增加明显计算量的前提下，将“反射残差应更平滑、透射边缘应保留”的先验加入训练。
+因此最终改进方法命名为 `ERRNet-R3Lite`，即 Reflection branch + Residual Reconstruction + Realistic synthesis 的轻量化版本。
 
-### 4.2 损失函数
+### 4.2 网络输出
 
-baseline 对 aligned 数据已有 pixel/VGG/GAN loss，对 unaligned 数据已有 VGG 或 contextual loss。改进方法在此基础上增加：
+baseline ERRNet 只输出：
 
-1. 反射残差平滑损失
+`T_hat = G(I)`
 
-   令 `R_hat = clamp(I - T_hat, -1, 1)`，约束 `R_hat` 的梯度：
+`ERRNet-R3Lite` 输出：
 
-   `L_ref_smooth = |grad_x(R_hat)| + |grad_y(R_hat)|`
+`T_hat, R_hat = G_r3(I)`
 
-   作用：降低输出中残留的高频反射纹理和局部鬼影。
+其中 `T_hat` 是最终反射去除结果，`R_hat` 是 auxiliary reflection layer，只用于训练约束、可视化分析和论文解释。
 
-2. 边缘保持损失
+### 4.3 可学习残差重建
 
-   对 aligned 数据使用目标透射层边缘作为监督：
+增加一个很小的 residual head：
 
-   `L_edge = |Edge(T_hat) - Edge(T)|`
+`S_hat = H(I, T_hat, R_hat)`
 
-   作用：防止残差平滑损失把真实背景边缘一起抹掉。
+用它约束输入重建：
 
-3. 可选颜色一致性损失
+`I ≈ T_hat + R_hat + S_hat`
 
-   用低权重约束全局颜色漂移：
+这里 `S_hat` 吸收非线性叠加、玻璃吸收、颜色偏移和 ghosting 等无法由简单 `T+R` 表示的误差。推理时仍只保存 `T_hat`。
 
-   `L_color = |mean(T_hat) - mean(T)|`
+### 4.4 损失函数
 
-   只在 aligned 数据启用。
+保留 ERRNet 原有损失：
+
+- aligned：pixel + gradient + VGG + GAN。
+- unaligned：VGG/contextual loss。
+
+新增：
+
+1. residual reconstruction loss
+
+   `L_rec = L1(I, clamp(T_hat + R_hat + S_hat)) + L_grad(I, clamp(T_hat + R_hat + S_hat))`
+
+2. reflection auxiliary loss
+
+   `L_r = L1(R_hat, R) + L_grad(R_hat, R)`
+
+   只对 synthetic aligned 数据启用，避免把 real89 中 fake `target_r` 当作真实反射监督。
+
+3. T/R gradient exclusion loss
+
+   `L_excl = mean(sigmoid(|grad(T_hat)|) * sigmoid(|grad(R_hat)|))`
+
+   作用是降低 transmission 和 reflection 的结构泄漏。
 
 最终：
 
-`L_total = L_ERRNet + lambda_ref_smooth * L_ref_smooth + lambda_edge * L_edge + lambda_color * L_color`
+`L_total = L_ERRNet + lambda_rec * L_rec + lambda_r * L_r + lambda_excl * L_excl`
 
-初始超参建议：
+初始超参：
 
-- `lambda_ref_smooth = 0.02`
-- `lambda_edge = 0.05`
-- `lambda_color = 0.01`
+- `lambda_rec = 0.2`
+- `lambda_r = 0.1`
+- `lambda_excl = 0.01`
 
-若 PSNR 下降或图像过平滑，优先降低 `lambda_ref_smooth` 到 `0.005` 或 `0.01`。
+若 PSNR 下降或背景边缘变弱，优先降低 `lambda_excl` 到 `0.005`；若输出仍残留明显反射，优先提高 `lambda_rec` 到 `0.3`。
 
-### 4.3 代码落点
+### 4.5 非线性/物理启发合成增强
+
+当前 `ReflectionSythesis_1` 主要是 blur 后叠加。新增 `--synthesis_model`：
+
+- `ceilnet`：原始 `ReflectionSythesis_1`，用于 baseline 可比。
+- `perceptual`：使用已有 `ReflectionSythesis_2`。
+- `mixed`：训练时随机混合 `ReflectionSythesis_1`、`ReflectionSythesis_2` 和新增轻量 `ReflectionSythesis_3`。
+
+`ReflectionSythesis_3` 近似模拟：
+
+- spatially varying alpha；
+- transmission attenuation；
+- reflection color shift；
+- small shift ghosting；
+- blur/defocus 随机化。
+
+### 4.6 代码落点
 
 预计修改：
 
 - `options/errnet/train_options.py`
-  - 增加 `--lambda_ref_smooth`
-  - 增加 `--lambda_edge`
-  - 增加 `--lambda_color`
+  - 增加 `--lambda_rec`
+  - 增加 `--lambda_r`
+  - 增加 `--lambda_excl`
+  - 增加 `--synthesis_model`
 
 - `models/losses.py`
   - 复用现有 `compute_gradient` / `GradientLoss`。
-  - 增加 `ResidualSmoothLoss` 或在 model 内部直接计算。
+  - 增加 `ExclusionLoss`，或先在 model 内部直接计算。
 
 - `models/errnet_model.py`
-  - 在 `backward_G()` 中按 aligned/unaligned 状态追加改进损失。
-  - 在 `get_current_errors()` 中记录 `RefSmooth`、`Edge`、`Color`。
+  - 增加 R3Lite model 或在当前 model 中按 `--r3lite` 分支处理双输出。
+  - 在 `backward_G()` 中追加 `Rec`、`R`、`Excl`。
+  - 在 `get_current_errors()` 中记录 `Rec`、`RLayer`、`Excl`。
+
+- `models/arch/default.py` 或新增 `models/arch/r3lite.py`
+  - 增加 6-channel output 的 ERRNet variant。
+  - 增加 residual head `H(I,T_hat,R_hat)`。
+
+- `data/transforms.py`、`data/reflect_dataset.py`
+  - 增加 `ReflectionSythesis_3`。
+  - 增加 `--synthesis_model mixed` 的选择逻辑。
 
 - 新增评测/汇总脚本，建议放在 `tools/`：
   - `tools/eval_all.py`：批量跑所有数据集并输出 CSV/Markdown。
@@ -141,13 +191,21 @@ baseline 对 aligned 数据已有 pixel/VGG/GAN loss，对 unaligned 数据已�
 1. Baseline：ERRNet 官方/课程 checkpoint
    - `checkpoints/errnet/errnet_060_00463920.pt`
 
-2. Improved：ERRNet-RS
+2. Improved：ERRNet-R3Lite finetune
    - 从 baseline checkpoint finetune。
-   - 保存至 `checkpoints/errnet_rs/`。
+   - 只局部加载兼容层；6-channel output head 和 residual head 随机初始化。
+   - 保存至 `checkpoints/errnet_r3lite/`。
 
 可选第三组：
 
-3. Baseline finetune：原始 loss 从同一 checkpoint 短程 finetune
+3. Improved-from-scratch：ERRNet-R3Lite 从头训练
+   - 利用本地 RTX 5070 Ti 16G 运行完整 aligned 训练，作为更有说服力的改进模型。
+   - 训练成本预计与 baseline 同量级，优先安排夜间长任务。
+   - 与 baseline checkpoint 和 ERRNet-R3Lite finetune 一起比较，区分“训练策略收益”和“方法收益”。
+
+可选第四组：
+
+4. Baseline finetune：原始 loss 从同一 checkpoint 短程 finetune
    - 用于证明提升来自改进 loss，而不是单纯多训练。
    - 如果时间不足，此项作为 ablation 可省略。
 
@@ -202,14 +260,14 @@ conda run -n errnet python test_errnet.py --name errnet --dataset wild -r --icnn
 improved 示例：
 
 ```powershell
-conda run -n errnet python test_errnet.py --name errnet_rs --dataset ceilnet_table2 -r --icnn_path checkpoints/errnet_rs/latest.pt --hyper
+conda run -n errnet python test_errnet.py --name errnet_r3lite --dataset ceilnet_table2 -r --icnn_path checkpoints/errnet_r3lite/latest.pt --hyper --inet errnet_r3lite
 ```
 
 后续会用 `tools/eval_all.py` 把这些命令自动化，输出：
 
 ```text
 workspace/results/metrics_baseline.csv
-workspace/results/metrics_errnet_rs.csv
+workspace/results/metrics_errnet_r3lite.csv
 workspace/results/metrics_compare.md
 ```
 
@@ -234,13 +292,35 @@ conda run -n errnet python train_errnet_unaligned.py --name errnet_unaligned_ft 
 
 ### 6.2 Improved 训练
 
-推荐先短程 finetune，而不是从头训练：
+由于本地有 RTX 5070 Ti 16G，可以把 improved 从头训练列为可选主实验路径；同时保留短程 finetune 作为快速验证和时间兜底。
+
+#### 6.2.1 快速验证：从 baseline checkpoint finetune
 
 ```powershell
-conda run -n errnet python train_errnet.py --name errnet_rs --hyper -r --icnn_path checkpoints/errnet/errnet_060_00463920.pt --lambda_ref_smooth 0.02 --lambda_edge 0.05 --lambda_color 0.01
+conda run -n errnet python train_errnet.py --name errnet_r3lite --hyper -r --icnn_path checkpoints/errnet/errnet_060_00463920.pt --inet errnet_r3lite --synthesis_model mixed --lambda_rec 0.2 --lambda_r 0.1 --lambda_excl 0.01
 ```
 
-如果训练脚本仍固定跑 60 epoch，代码实现时需要增加 `--nEpochs` 生效或新增短程 finetune 脚本，建议先跑 10-20 epoch 观察验证集结果。
+由于 output head 与 baseline 不完全兼容，加载 checkpoint 时需要支持 partial load：兼容层加载 baseline，新增 head 随机初始化。如果训练脚本仍固定跑 60 epoch，代码实现时需要增加 `--nEpochs` 生效或新增短程 finetune 脚本，建议先跑 10-20 epoch 观察验证集结果。
+
+#### 6.2.2 可选主实验：ERRNet-R3Lite 从头训练
+
+从头训练命令：
+
+```powershell
+conda run -n errnet python train_errnet.py --name errnet_r3lite_scratch --hyper --inet errnet_r3lite --synthesis_model mixed --lambda_rec 0.2 --lambda_r 0.1 --lambda_excl 0.01
+```
+
+建议训练策略：
+
+- 先运行 debug/smoke test，确认新增损失没有 NaN、显存可承受。
+- 再按 baseline 的 60 epoch aligned 训练协议完整训练。
+- 若训练时间允许，再从 scratch checkpoint 继续运行 unaligned finetune：
+
+```powershell
+conda run -n errnet python train_errnet_unaligned.py --name errnet_r3lite_scratch_unaligned_ft --hyper -r --icnn_path checkpoints/errnet_r3lite_scratch/latest.pt --inet errnet_r3lite --unaligned_loss vgg --synthesis_model mixed --lambda_rec 0.2 --lambda_r 0.1 --lambda_excl 0.01
+```
+
+实现时需要确保 `train_errnet_unaligned.py` 也能解析并使用新增 loss 参数；对 unaligned 数据默认启用 `L_rec` 和 `L_excl`，不启用 `L_r`。
 
 建议保存：
 
@@ -258,7 +338,7 @@ workspace/
   logs/
   results/
     metrics_baseline.csv
-    metrics_errnet_rs.csv
+    metrics_errnet_r3lite.csv
     metrics_compare.md
   figures/
     qualitative_ceilnet.png
@@ -295,9 +375,11 @@ workspace/
    - Channel-wise context。
    - Multi-scale spatial context。
    - aligned / unaligned loss。
-4. 改进方法：ERRNet-RS
-   - 反射残差平滑先验。
-   - 边缘保持约束。
+4. 改进方法：ERRNet-R3Lite
+   - 文献调查结论与方法选择依据。
+   - Reflection auxiliary branch。
+   - Learnable residual reconstruction。
+   - 非线性/物理启发合成增强。
    - 损失函数与训练方式。
 5. 实验设置
    - 训练集、测试集、自采数据。
@@ -319,7 +401,7 @@ workspace/
 1. 标题页
 2. 任务背景与难点
 3. ERRNet baseline
-4. 改进方法 ERRNet-RS
+4. 改进方法 ERRNet-R3Lite
 5. 数据集与指标
 6. 定量结果总表
 7. 可视化对比
@@ -337,15 +419,16 @@ workspace/
 
 ### 2026-06-12
 
-- 实现 ERRNet-RS 损失项和参数开关。
+- 实现 ERRNet-R3Lite 网络、损失项、参数开关和 mixed synthesis。
 - 完成 smoke test：小数据/短 epoch 确认 loss 正常、checkpoint 可保存。
-- 开始短程 finetune。
+- 开始短程 finetune；若 smoke test 稳定，夜间启动 `errnet_r3lite_scratch` 从头训练。
 
 ### 2026-06-13
 
-- 完成 improved 主要训练。
+- 完成 improved finetune 主要训练。
+- 检查 `errnet_r3lite_scratch` 训练进度；如果结果稳定，继续完整训练，否则回退到 finetune 版本作为主结果。
 - 跑所有测试集评测。
-- 初步比较 baseline 与 improved，必要时调整 `lambda_ref_smooth`。
+- 初步比较 baseline 与 improved，必要时调整 `lambda_rec`、`lambda_r`、`lambda_excl`。
 
 ### 2026-06-14
 
@@ -370,9 +453,12 @@ workspace/
    - 直接使用课程 baseline checkpoint 做 baseline。
    - Improved 只做 checkpoint finetune 10 epoch。
    - 如果 finetune 来不及，保留代码实现和小规模训练结果，但论文要明确训练预算。
+   - RTX 5070 Ti 16G 支持尝试从头训练，但从头训练不是唯一交付路径；若完整 scratch 训练未收敛，使用 finetune 结果提交。
 
 2. 改进指标不稳定
-   - 降低 `lambda_ref_smooth`。
+   - 若背景边缘被削弱，降低 `lambda_excl`。
+   - 若重建约束过强导致输出偏向输入，降低 `lambda_rec`。
+   - 若 reflection 分支不稳定，先关闭或降低 `lambda_r`。
    - 保留“可视化改善但 PSNR 小幅下降”的分析，因为反射去除中视觉质量和 full-reference 指标可能不完全一致。
    - 增加 baseline-finetune ablation，避免把训练轮数差异误当作方法差异。
 
@@ -388,8 +474,10 @@ workspace/
 
 - [ ] 跑 baseline 五个主测试集，保存指标。
 - [ ] 新增 `my5` 数据集支持。
-- [ ] 实现 `lambda_ref_smooth`、`lambda_edge`、`lambda_color`。
+- [ ] 实现 `errnet_r3lite`、`lambda_rec`、`lambda_r`、`lambda_excl`。
+- [ ] 实现 `--synthesis_model mixed` 和 `ReflectionSythesis_3`。
 - [ ] 新增批量评测和可视化拼图脚本。
-- [ ] 训练 `errnet_rs` 短程版本。
+- [ ] 训练 `errnet_r3lite` 短程版本。
+- [ ] 启动并跟踪 `errnet_r3lite_scratch` 从头训练。
 - [ ] 生成对比表和论文图片。
 - [ ] 撰写论文与 PPT。
