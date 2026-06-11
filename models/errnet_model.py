@@ -45,6 +45,27 @@ def _flag_enabled(data, key, default=False):
     return bool(value)
 
 
+def _load_matching_state_dict(module, state_dict):
+    current = module.state_dict()
+    matched = {}
+    skipped = []
+
+    for key, value in state_dict.items():
+        if key in current and current[key].shape == value.shape:
+            matched[key] = value
+        elif key in current and current[key].ndim > 0 and current[key].shape[0] == value.shape[0] * 2 and current[key].shape[1:] == value.shape[1:]:
+            expanded = current[key].clone()
+            expanded[:value.shape[0]] = value
+            expanded[value.shape[0]:] = 0
+            matched[key] = expanded
+        else:
+            skipped.append(key)
+
+    current.update(matched)
+    module.load_state_dict(current)
+    return len(matched), skipped
+
+
 class EdgeMap(nn.Module):
     def __init__(self, scale=1):
         super(EdgeMap, self).__init__()
@@ -107,6 +128,7 @@ class ERRNetBase(BaseModel):
         
         self.input_edge = self.edge_map(self.input)
         self.target_t = target_t
+        self.target_r = target_r
         self.data_name = data_name
 
         self.issyn = not _flag_enabled(data, 'real', default=False)
@@ -281,6 +303,9 @@ class ERRNetModel(ERRNetBase):
         self.loss_icnn_pixel = None
         self.loss_icnn_vgg = None
         self.loss_G_GAN = None
+        self.loss_rec = None
+        self.loss_r = None
+        self.loss_excl = None
 
         if self.opt.lambda_gan > 0:
             self.loss_G_GAN = self.loss_dic['gan'].get_g_loss(
@@ -299,6 +324,22 @@ class ERRNetModel(ERRNetBase):
             self.loss_CX = self.loss_dic['t_cx'].get_loss(self.output_i, self.target_t)
             
             self.loss_G += self.loss_CX
+
+        if self.output_r is not None:
+            if self.opt.lambda_rec > 0:
+                self.loss_rec = self.loss_dic['r3_rec'].get_loss(
+                    self.output_reconstruction, self.input)
+                self.loss_G += self.loss_rec * self.opt.lambda_rec
+
+            if self.aligned and self.issyn and self.target_r is not None and self.opt.lambda_r > 0:
+                self.loss_r = self.loss_dic['r3_reflection'].get_loss(
+                    self.output_r, self.target_r)
+                self.loss_G += self.loss_r * self.opt.lambda_r
+
+            if self.opt.lambda_excl > 0:
+                self.loss_excl = self.loss_dic['r3_excl'].get_loss(
+                    self.output_i, self.output_r)
+                self.loss_G += self.loss_excl * self.opt.lambda_excl
         
         self.loss_G.backward()
 
@@ -314,7 +355,19 @@ class ERRNetModel(ERRNetBase):
             input_i.extend(hypercolumn)
             input_i = torch.cat(input_i, dim=1)
 
-        output_i = self.net_i(input_i)
+        net_output = self.net_i(input_i)
+
+        self.output_r = None
+        self.output_residual = None
+        self.output_reconstruction = None
+
+        if isinstance(net_output, (tuple, list)):
+            output_i, output_r, output_residual = net_output[:3]
+            self.output_r = output_r
+            self.output_residual = output_residual
+            self.output_reconstruction = torch.clamp(output_i + output_r + output_residual, 0, 1)
+        else:
+            output_i = net_output
 
         self.output_i = output_i
 
@@ -346,6 +399,12 @@ class ERRNetModel(ERRNetBase):
 
         if self.loss_CX is not None:
             ret_errors['CX'] = self.loss_CX.item()
+        if self.loss_rec is not None:
+            ret_errors['Rec'] = self.loss_rec.item()
+        if self.loss_r is not None:
+            ret_errors['RLayer'] = self.loss_r.item()
+        if self.loss_excl is not None:
+            ret_errors['Excl'] = self.loss_excl.item()
 
         return ret_errors
 
@@ -355,6 +414,10 @@ class ERRNetModel(ERRNetBase):
         ret_visuals['output_i'] = tensor2im(self.output_i).astype(np.uint8)        
         ret_visuals['target'] = tensor2im(self.target_t).astype(np.uint8)
         ret_visuals['residual'] = tensor2im((self.input - self.output_i)).astype(np.uint8)
+        if self.output_r is not None:
+            ret_visuals['output_r'] = tensor2im(self.output_r).astype(np.uint8)
+            ret_visuals['r3_residual'] = tensor2im(self.output_residual + 0.5).astype(np.uint8)
+            ret_visuals['reconstruction'] = tensor2im(self.output_reconstruction).astype(np.uint8)
 
         return ret_visuals       
 
@@ -373,7 +436,14 @@ class ERRNetModel(ERRNetBase):
                 model.optimizer_G.load_state_dict(state_dict['opt_g'])
         else:
             state_dict = _torch_load_compat(icnn_path, map_location=torch.device('cpu'))
-            model.net_i.load_state_dict(state_dict['icnn'])
+            try:
+                model.net_i.load_state_dict(state_dict['icnn'])
+            except RuntimeError as err:
+                matched, skipped = _load_matching_state_dict(model.net_i, state_dict['icnn'])
+                print('[i] partial-load net_i from %s: matched %d tensors, skipped %d tensors' % (
+                    icnn_path, matched, len(skipped)))
+                if matched == 0:
+                    raise err
             model.epoch = state_dict['epoch']
             model.iterations = state_dict['iterations']
             # if model.isTrain:

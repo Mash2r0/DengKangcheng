@@ -234,6 +234,72 @@ class ReflectionSythesis_2(object):
         return np.float32(ori_t), np.float32(r_blur_mask), np.float32(blend)
 
 
+class ReflectionSythesis_3(object):
+    """Lightweight realistic synthesis inspired by non-linear and physical SIRR models."""
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def _smooth_mask(h, w):
+        noise = np.random.rand(h, w, 1).astype(np.float32)
+        sigma = np.random.uniform(20, 60)
+        mask = cv2.GaussianBlur(noise, (0, 0), sigma)
+        if mask.ndim == 2:
+            mask = mask[..., None]
+        mask = (mask - mask.min()) / (mask.max() - mask.min() + 1e-6)
+        mask = 0.2 + mask * np.random.uniform(0.35, 0.75)
+        return np.repeat(mask, 3, axis=2).astype(np.float32)
+
+    def __call__(self, B, R):
+        if not _is_pil_image(B):
+            raise TypeError('B should be PIL Image. Got {}'.format(type(B)))
+        if not _is_pil_image(R):
+            raise TypeError('R should be PIL Image. Got {}'.format(type(R)))
+
+        B_ = np.asarray(B, np.float32) / 255.
+        R_ = np.asarray(R, np.float32) / 255.
+        h, w = B_.shape[:2]
+
+        B_lin = np.power(B_, 2.2)
+        R_lin = np.power(R_, 2.2)
+
+        sigma = np.random.uniform(1.0, 6.0)
+        ksize = int(2 * np.ceil(2 * sigma) + 1)
+        R_blur = cv2.GaussianBlur(R_lin, (ksize, ksize), sigma)
+
+        shift_x = np.random.randint(-4, 5)
+        shift_y = np.random.randint(-4, 5)
+        matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+        ghost = cv2.warpAffine(R_blur, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        ghost_weight = np.random.uniform(0.0, 0.35)
+        R_blur = np.clip((1.0 - ghost_weight) * R_blur + ghost_weight * ghost, 0, 1)
+
+        alpha = self._smooth_mask(h, w)
+        reflection_color = np.random.uniform(0.85, 1.2, size=(1, 1, 3)).astype(np.float32)
+        transmission_attenuation = np.random.uniform(0.82, 1.0, size=(1, 1, 3)).astype(np.float32)
+
+        R_layer_lin = np.clip(alpha * R_blur * reflection_color, 0, 1)
+        M_lin = np.clip(transmission_attenuation * B_lin + R_layer_lin, 0, 1)
+
+        R_layer = np.power(R_layer_lin, 1 / 2.2)
+        M_ = np.power(M_lin, 1 / 2.2)
+
+        return np.float32(B_), np.float32(R_layer), np.float32(M_)
+
+
+class MixedReflectionSynthesis(object):
+    def __init__(self, low_sigma=2, high_sigma=5, low_gamma=1.3, high_gamma=1.3):
+        self.models = [
+            ReflectionSythesis_1(kernel_sizes=[11], low_sigma=low_sigma, high_sigma=high_sigma,
+                                 low_gamma=low_gamma, high_gamma=high_gamma),
+            ReflectionSythesis_2(),
+            ReflectionSythesis_3(),
+        ]
+
+    def __call__(self, B, R):
+        return random.choice(self.models)(B, R)
+
+
 # Examples
 if __name__ == '__main__':
     """cv2 imread"""

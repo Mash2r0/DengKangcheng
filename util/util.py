@@ -182,6 +182,8 @@ def write_loss(writer, prefix, avg_meters, iteration):
 import socket
 
 try:
+    if os.name == 'nt':
+        raise ValueError
     _rows, _cols = os.popen('stty size', 'r').read().split()
     term_width = int(_cols)
 except ValueError:

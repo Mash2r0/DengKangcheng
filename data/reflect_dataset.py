@@ -1,7 +1,7 @@
 import os.path
 from os.path import join
 from data.image_folder import make_dataset
-from data.transforms import Sobel, to_norm_tensor, to_tensor, ReflectionSythesis_1, ReflectionSythesis_2
+from data.transforms import Sobel, to_norm_tensor, to_tensor, ReflectionSythesis_1, ReflectionSythesis_2, ReflectionSythesis_3, MixedReflectionSynthesis
 from PIL import Image
 import random
 import torch
@@ -110,7 +110,8 @@ class DataLoader(torch.utils.data.DataLoader):
 
 
 class CEILDataset(BaseDataset):
-    def __init__(self, datadir, fns=None, size=None, enable_transforms=True, low_sigma=2, high_sigma=5, low_gamma=1.3, high_gamma=1.3):
+    def __init__(self, datadir, fns=None, size=None, enable_transforms=True, low_sigma=2, high_sigma=5,
+                 low_gamma=1.3, high_gamma=1.3, synthesis_model='ceilnet'):
         super(CEILDataset, self).__init__()
         self.size = size
         self.datadir = datadir
@@ -121,7 +122,19 @@ class CEILDataset(BaseDataset):
         if size is not None:
             self.paths = self.paths[:size]
 
-        self.syn_model = ReflectionSythesis_1(kernel_sizes=[11], low_sigma=low_sigma, high_sigma=high_sigma, low_gamma=low_gamma, high_gamma=high_gamma)
+        self.synthesis_model = synthesis_model
+        if synthesis_model == 'ceilnet':
+            self.syn_model = ReflectionSythesis_1(kernel_sizes=[11], low_sigma=low_sigma, high_sigma=high_sigma,
+                                                  low_gamma=low_gamma, high_gamma=high_gamma)
+        elif synthesis_model == 'perceptual':
+            self.syn_model = ReflectionSythesis_2()
+        elif synthesis_model == 'physical':
+            self.syn_model = ReflectionSythesis_3()
+        elif synthesis_model == 'mixed':
+            self.syn_model = MixedReflectionSynthesis(low_sigma=low_sigma, high_sigma=high_sigma,
+                                                      low_gamma=low_gamma, high_gamma=high_gamma)
+        else:
+            raise ValueError('Unknown synthesis_model: %s' % synthesis_model)
         self.reset(shuffle=False)
 
     def reset(self, shuffle=True):

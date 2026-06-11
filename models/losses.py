@@ -45,6 +45,27 @@ class MultipleLoss(nn.Module):
         return total_loss
 
 
+class ExclusionLoss(nn.Module):
+    def __init__(self, eps=1e-6):
+        super(ExclusionLoss, self).__init__()
+        self.eps = eps
+
+    def _normalize(self, grad):
+        denom = grad.abs().mean(dim=(2, 3), keepdim=True).detach() + self.eps
+        return grad / denom
+
+    def forward(self, transmission, reflection):
+        tx, ty = compute_gradient(transmission)
+        rx, ry = compute_gradient(reflection)
+        tx = self._normalize(tx).abs()
+        ty = self._normalize(ty).abs()
+        rx = self._normalize(rx).abs()
+        ry = self._normalize(ry).abs()
+        loss_x = torch.mean(torch.sigmoid(tx) * torch.sigmoid(rx))
+        loss_y = torch.mean(torch.sigmoid(ty) * torch.sigmoid(ry))
+        return loss_x + loss_y
+
+
 class MeanShift(nn.Conv2d):
     def __init__(self, data_mean, data_std, data_range=1, norm=True):
         """norm (bool): normalize/denormalize the stats"""
@@ -259,6 +280,18 @@ def init_loss(opt, tensor):
 
     loss_dic['t_pixel'] = pixel_loss
     loss_dic['r_pixel'] = pixel_loss
+
+    r3_rec_loss = ContentLoss()
+    r3_rec_loss.initialize(MultipleLoss([nn.L1Loss(), GradientLoss()], [1.0, 1.0]))
+    loss_dic['r3_rec'] = r3_rec_loss
+
+    r3_reflection_loss = ContentLoss()
+    r3_reflection_loss.initialize(MultipleLoss([nn.L1Loss(), GradientLoss()], [1.0, 1.0]))
+    loss_dic['r3_reflection'] = r3_reflection_loss
+
+    r3_excl_loss = ContentLoss()
+    r3_excl_loss.initialize(ExclusionLoss())
+    loss_dic['r3_excl'] = r3_excl_loss
 
     if opt.lambda_gan > 0:
         if opt.gan_type == 'sgan' or opt.gan_type == 'gan':

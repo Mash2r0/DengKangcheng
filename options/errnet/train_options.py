@@ -39,5 +39,11 @@ class TrainOptions(BaseOptions):
         
         self.parser.add_argument('--lambda_gan', type=float, default=0.01, help='weight for gan loss')
         self.parser.add_argument('--lambda_vgg', type=float, default=0.1, help='weight for vgg loss')
+        self.parser.add_argument('--lambda_rec', type=float, default=0.0, help='weight for R3Lite residual reconstruction loss')
+        self.parser.add_argument('--lambda_r', type=float, default=0.0, help='weight for R3Lite reflection auxiliary loss')
+        self.parser.add_argument('--lambda_excl', type=float, default=0.0, help='weight for R3Lite transmission/reflection exclusion loss')
+        self.parser.add_argument('--synthesis_model', type=str, default='ceilnet',
+            choices=['ceilnet', 'perceptual', 'physical', 'mixed'],
+            help='synthetic reflection model for training data')
         
         self.isTrain = True

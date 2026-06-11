@@ -19,10 +19,11 @@ datadir_syn = join(datadir, 'VOCdevkit/VOC2012/PNGImages')
 datadir_real = join(datadir, 'real_train')
 datadir_unaligned = join(raw_datadir, 'Dataset/DSLR/unaligned_train250')
 
-train_dataset = datasets.CEILDataset(datadir_syn, read_fns('VOC2012_224_train_png.txt'), size=opt.max_dataset_size)
-train_dataset_real = datasets.CEILTestDataset(datadir_real, enable_transforms=True)
+train_dataset = datasets.CEILDataset(datadir_syn, read_fns('VOC2012_224_train_png.txt'), size=opt.max_dataset_size,
+                                     synthesis_model=opt.synthesis_model)
+train_dataset_real = datasets.CEILTestDataset(datadir_real, enable_transforms=True, size=opt.max_dataset_size)
 
-train_dataset_unaligned = datasets.CEILTestDataset(datadir_unaligned, enable_transforms=True, flag={'unaligned':True}, size=None)
+train_dataset_unaligned = datasets.CEILTestDataset(datadir_unaligned, enable_transforms=True, flag={'unaligned':True}, size=opt.max_dataset_size)
 
 train_dataset_fusion = datasets.FusionDataset([train_dataset, train_dataset_unaligned, train_dataset_real], [0.25,0.5,0.25])
 
@@ -40,7 +41,7 @@ def set_learning_rate(lr):
 
 
 set_learning_rate(1e-4)
-while engine.epoch < 80:
+while engine.epoch < opt.nEpochs:
     if engine.epoch == 65:
         set_learning_rate(5e-5)
     if engine.epoch == 70:

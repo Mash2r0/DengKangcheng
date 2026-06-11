@@ -34,9 +34,10 @@ datadir_real = join(datadir, 'real_train')
 train_dataset = datasets.CEILDataset(
     datadir_syn, read_fns('VOC2012_224_train_png.txt'), size=opt.max_dataset_size, enable_transforms=True, 
     low_sigma=opt.low_sigma, high_sigma=opt.high_sigma,
-    low_gamma=opt.low_gamma, high_gamma=opt.high_gamma)
+    low_gamma=opt.low_gamma, high_gamma=opt.high_gamma,
+    synthesis_model=opt.synthesis_model)
 
-train_dataset_real = datasets.CEILTestDataset(datadir_real, enable_transforms=True)
+train_dataset_real = datasets.CEILTestDataset(datadir_real, enable_transforms=True, size=opt.max_dataset_size)
 
 train_dataset_fusion = datasets.FusionDataset([train_dataset, train_dataset_real], [0.7, 0.3])
 
@@ -72,10 +73,20 @@ if opt.resume:
     res = engine.eval(eval_dataloader_ceilnet, dataset_name='testdata_table2')
 
 # define training strategy 
-engine.model.opt.lambda_gan = 0
+engine.model.opt.lambda_gan = 0.01 if engine.epoch >= 20 else 0
 # engine.model.opt.lambda_gan = 0.01
-set_learning_rate(1e-4)
-while engine.epoch < 60:
+if engine.epoch >= 50:
+    set_learning_rate(1e-5)
+elif engine.epoch >= 45:
+    set_learning_rate(5e-5)
+elif engine.epoch >= 40:
+    set_learning_rate(1e-5)
+elif engine.epoch >= 30:
+    set_learning_rate(5e-5)
+else:
+    set_learning_rate(1e-4)
+
+while engine.epoch < opt.nEpochs:
     if engine.epoch == 20:
         engine.model.opt.lambda_gan = 0.01 # gan loss is added after epoch 20
     if engine.epoch == 30:

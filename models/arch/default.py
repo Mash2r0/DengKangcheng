@@ -91,6 +91,56 @@ class DRNet(torch.nn.Module):
         return x
 
 
+class R3LiteNet(torch.nn.Module):
+    def __init__(self, in_channels, n_feats, n_resblocks, norm=nn.BatchNorm2d,
+    se_reduction=None, res_scale=1, bottom_kernel_size=3, pyramid=False):
+        super(R3LiteNet, self).__init__()
+        conv = nn.Conv2d
+        deconv = nn.ConvTranspose2d
+        act = nn.ReLU(True)
+
+        self.pyramid_module = None
+        self.conv1 = ConvLayer(conv, in_channels, n_feats, kernel_size=bottom_kernel_size, stride=1, norm=None, act=act)
+        self.conv2 = ConvLayer(conv, n_feats, n_feats, kernel_size=3, stride=1, norm=norm, act=act)
+        self.conv3 = ConvLayer(conv, n_feats, n_feats, kernel_size=3, stride=2, norm=norm, act=act)
+
+        dilation_config = [1] * n_resblocks
+        self.res_module = nn.Sequential(*[ResidualBlock(
+            n_feats, dilation=dilation_config[i], norm=norm, act=act,
+            se_reduction=se_reduction, res_scale=res_scale) for i in range(n_resblocks)])
+
+        self.deconv1 = ConvLayer(deconv, n_feats, n_feats, kernel_size=4, stride=2, padding=1, norm=norm, act=act)
+        self.deconv2 = ConvLayer(conv, n_feats, n_feats, kernel_size=3, stride=1, norm=norm, act=act)
+
+        if pyramid:
+            self.pyramid_module = PyramidPooling(n_feats, n_feats, scales=(4,8,16,32), ct_channels=n_feats//4)
+
+        self.deconv3 = ConvLayer(conv, n_feats, 6, kernel_size=1, stride=1, norm=None, act=act)
+        self.residual_head = nn.Sequential(
+            nn.Conv2d(9, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(32, 3, kernel_size=3, stride=1, padding=1),
+            nn.Tanh()
+        )
+
+    def forward(self, x):
+        input_rgb = x[:, :3, :, :]
+
+        y = self.conv1(x)
+        y = self.conv2(y)
+        y = self.conv3(y)
+        y = self.res_module(y)
+        y = self.deconv1(y)
+        y = self.deconv2(y)
+        if self.pyramid_module is not None:
+            y = self.pyramid_module(y)
+        y = self.deconv3(y)
+
+        output_t, output_r = torch.chunk(y, 2, dim=1)
+        residual = self.residual_head(torch.cat([input_rgb, output_t, output_r], dim=1)) * 0.25
+        return output_t, output_r, residual
+
+
 class ConvLayer(torch.nn.Sequential):
     def __init__(self, conv, in_channels, out_channels, kernel_size, stride, padding=None, dilation=1, norm=None, act=None):
         super(ConvLayer, self).__init__()
