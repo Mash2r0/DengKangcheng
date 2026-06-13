@@ -15,4 +15,5 @@ processed_data
 docs/
 imgs/
 workspace/logs/
-results_r3lite/
+results*/
+.ipynb_checkpoints/

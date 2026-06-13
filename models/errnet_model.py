@@ -363,6 +363,17 @@ class ERRNetModel(ERRNetBase):
 
         if isinstance(net_output, (tuple, list)):
             output_i, output_r, output_residual = net_output[:3]
+            if output_i.shape[2:] != self.input.shape[2:]:
+                h = min(output_i.size(2), self.input.size(2))
+                w = min(output_i.size(3), self.input.size(3))
+                output_i = output_i[:, :, :h, :w]
+                output_r = output_r[:, :, :h, :w]
+                output_residual = output_residual[:, :, :h, :w]
+                self.input = self.input[:, :, :h, :w]
+                if self.target_t is not None and not isinstance(self.target_t, int):
+                    self.target_t = self.target_t[:, :, :h, :w]
+                if self.target_r is not None and not isinstance(self.target_r, int):
+                    self.target_r = self.target_r[:, :, :h, :w]
             self.output_r = output_r
             self.output_residual = output_residual
             self.output_reconstruction = torch.clamp(output_i + output_r + output_residual, 0, 1)

@@ -137,6 +137,11 @@ class R3LiteNet(torch.nn.Module):
         y = self.deconv3(y)
 
         output_t, output_r = torch.chunk(y, 2, dim=1)
+        h = min(input_rgb.size(2), output_t.size(2), output_r.size(2))
+        w = min(input_rgb.size(3), output_t.size(3), output_r.size(3))
+        input_rgb = input_rgb[:, :, :h, :w]
+        output_t = output_t[:, :, :h, :w]
+        output_r = output_r[:, :, :h, :w]
         residual = self.residual_head(torch.cat([input_rgb, output_t, output_r], dim=1)) * 0.25
         return output_t, output_r, residual
 
