@@ -9,6 +9,8 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--update_html_freq', type=int, default=1000, help='frequency of saving training results to html')
         self.parser.add_argument('--print_freq', type=int, default=100, help='frequency of showing training results on console')
         self.parser.add_argument('--no_html', action='store_true', help='do not save intermediate training results to [opt.checkpoints_dir]/[opt.name]/web/')
+        self.parser.add_argument('--no_metric_plot', action='store_true', help='disable CSV/PNG metric curve logging')
+        self.parser.add_argument('--metric_plot_freq', type=int, default=1, help='plot metric curves every N epochs/evals')
         self.parser.add_argument('--save_epoch_freq', type=int, default=10, help='frequency of saving checkpoints at the end of epochs')
         self.parser.add_argument('--debug', action='store_true', help='only do one epoch and displays at each iteration')
 
@@ -42,6 +44,10 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--lambda_rec', type=float, default=0.0, help='weight for R3Lite residual reconstruction loss')
         self.parser.add_argument('--lambda_r', type=float, default=0.0, help='weight for R3Lite reflection auxiliary loss')
         self.parser.add_argument('--lambda_excl', type=float, default=0.0, help='weight for R3Lite transmission/reflection exclusion loss')
+        self.parser.add_argument('--lambda_base', type=float, default=0.0, help='weight for baseline-preserving loss in gated R3Lite')
+        self.parser.add_argument('--lambda_mask', type=float, default=0.0, help='weight for reflection-confidence mask supervision in gated R3Lite')
+        self.parser.add_argument('--mask_reflect_scale', type=float, default=0.2, help='scale for soft reflection mask from abs(input-target)')
+        self.parser.add_argument('--no_freeze_gated_base', action='store_true', help='do not freeze the ERRNet-initialized baseline path in gated R3Lite')
         self.parser.add_argument('--synthesis_model', type=str, default='ceilnet',
             choices=['ceilnet', 'perceptual', 'physical', 'mixed'],
             help='synthetic reflection model for training data')

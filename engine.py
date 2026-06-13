@@ -6,6 +6,7 @@ import os
 import sys
 from os.path import join
 from util.visualizer import Visualizer
+from util.metric_visualizer import MetricsVisualizer
 
 
 class Engine(object):
@@ -13,6 +14,7 @@ class Engine(object):
         self.opt = opt
         self.writer = None
         self.visualizer = None
+        self.metric_visualizer = None
         self.model = None
         self.best_val_loss = 1e6
 
@@ -31,6 +33,8 @@ class Engine(object):
         if not opt.no_log:
             self.writer = util.get_summary_writer(os.path.join(self.basedir, 'logs'))
             self.visualizer = Visualizer(opt)
+            if not getattr(opt, 'no_metric_plot', False):
+                self.metric_visualizer = MetricsVisualizer(opt)
 
     def train(self, train_loader, **kwargs):
         print('\nEpoch: %d' % self.epoch)
@@ -67,6 +71,9 @@ class Engine(object):
         self.epoch += 1
 
         if not self.opt.no_log:
+            if self.metric_visualizer is not None:
+                self.metric_visualizer.record('train', self.epoch, self.iterations, avg_meters)
+
             if self.epoch % opt.save_epoch_freq == 0:
                 print('saving the model at epoch %d, iters %d' %
                     (self.epoch, self.iterations))
@@ -96,6 +103,9 @@ class Engine(object):
                 
         if not opt.no_log:
             util.write_loss(self.writer, join('eval', dataset_name), avg_meters, self.epoch)
+            if self.metric_visualizer is not None:
+                self.metric_visualizer.record(
+                    join('eval', dataset_name), self.epoch, self.iterations, avg_meters)
         
         if loss_key is not None:
             val_loss = avg_meters[loss_key]

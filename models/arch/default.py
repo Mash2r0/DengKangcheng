@@ -146,6 +146,118 @@ class R3LiteNet(torch.nn.Module):
         return output_t, output_r, residual
 
 
+class GatedR3LiteNet(torch.nn.Module):
+    """Baseline-preserving R3Lite refiner.
+
+    The backbone layer names intentionally match ERRNet/DRNet so an ERRNet
+    checkpoint can initialize the baseline path through partial loading.
+    """
+    def __init__(self, in_channels, n_feats, n_resblocks, norm=nn.BatchNorm2d,
+    se_reduction=None, res_scale=1, bottom_kernel_size=3, pyramid=False, delta_scale=0.25):
+        super(GatedR3LiteNet, self).__init__()
+        conv = nn.Conv2d
+        deconv = nn.ConvTranspose2d
+        act = nn.ReLU(True)
+
+        self.pyramid_module = None
+        self.delta_scale = delta_scale
+
+        self.conv1 = ConvLayer(conv, in_channels, n_feats, kernel_size=bottom_kernel_size, stride=1, norm=None, act=act)
+        self.conv2 = ConvLayer(conv, n_feats, n_feats, kernel_size=3, stride=1, norm=norm, act=act)
+        self.conv3 = ConvLayer(conv, n_feats, n_feats, kernel_size=3, stride=2, norm=norm, act=act)
+
+        dilation_config = [1] * n_resblocks
+        self.res_module = nn.Sequential(*[ResidualBlock(
+            n_feats, dilation=dilation_config[i], norm=norm, act=act,
+            se_reduction=se_reduction, res_scale=res_scale) for i in range(n_resblocks)])
+
+        self.deconv1 = ConvLayer(deconv, n_feats, n_feats, kernel_size=4, stride=2, padding=1, norm=norm, act=act)
+        self.deconv2 = ConvLayer(conv, n_feats, n_feats, kernel_size=3, stride=1, norm=norm, act=act)
+
+        if pyramid:
+            self.pyramid_module = PyramidPooling(n_feats, n_feats, scales=(4,8,16,32), ct_channels=n_feats//4)
+
+        # Baseline path. This name/shape matches ERRNet and can be initialized
+        # from checkpoints/errnet/errnet_060_00463920.pt.
+        self.deconv3 = ConvLayer(conv, n_feats, 3, kernel_size=1, stride=1, norm=None, act=act)
+
+        self.delta_head = nn.Sequential(
+            nn.Conv2d(n_feats, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1),
+            nn.Tanh()
+        )
+        self.mask_head = nn.Sequential(
+            nn.Conv2d(n_feats, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(32, 1, kernel_size=3, stride=1, padding=1),
+            nn.Sigmoid()
+        )
+        self.reflection_head = nn.Sequential(
+            nn.Conv2d(n_feats, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(True)
+        )
+        self.residual_head = nn.Sequential(
+            nn.Conv2d(9, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(32, 3, kernel_size=3, stride=1, padding=1),
+            nn.Tanh()
+        )
+
+    def set_base_requires_grad(self, requires_grad):
+        base_modules = [
+            self.conv1, self.conv2, self.conv3, self.res_module,
+            self.deconv1, self.deconv2, self.deconv3
+        ]
+        if self.pyramid_module is not None:
+            base_modules.append(self.pyramid_module)
+        for module in base_modules:
+            for param in module.parameters():
+                param.requires_grad = requires_grad
+
+    def init_gated_identity(self, mask_bias=-4.0):
+        # Start from exactly the ERRNet baseline: T = T0 + M * 0.
+        nn.init.zeros_(self.delta_head[-2].weight)
+        nn.init.zeros_(self.delta_head[-2].bias)
+        nn.init.zeros_(self.mask_head[-2].weight)
+        nn.init.constant_(self.mask_head[-2].bias, mask_bias)
+        nn.init.zeros_(self.reflection_head[-2].weight)
+        nn.init.zeros_(self.reflection_head[-2].bias)
+        nn.init.zeros_(self.residual_head[-2].weight)
+        nn.init.zeros_(self.residual_head[-2].bias)
+
+    def forward(self, x):
+        input_rgb = x[:, :3, :, :]
+
+        y = self.conv1(x)
+        y = self.conv2(y)
+        y = self.conv3(y)
+        y = self.res_module(y)
+        y = self.deconv1(y)
+        y = self.deconv2(y)
+        if self.pyramid_module is not None:
+            y = self.pyramid_module(y)
+
+        base_t = torch.clamp(self.deconv3(y), 0, 1)
+        delta_t = self.delta_head(y) * self.delta_scale
+        mask = self.mask_head(y)
+        output_r = self.reflection_head(y)
+
+        h = min(input_rgb.size(2), base_t.size(2), delta_t.size(2), mask.size(2), output_r.size(2))
+        w = min(input_rgb.size(3), base_t.size(3), delta_t.size(3), mask.size(3), output_r.size(3))
+        input_rgb = input_rgb[:, :, :h, :w]
+        base_t = base_t[:, :, :h, :w]
+        delta_t = delta_t[:, :, :h, :w]
+        mask = mask[:, :, :h, :w]
+        output_r = output_r[:, :, :h, :w]
+
+        output_t = torch.clamp(base_t + mask * delta_t, 0, 1)
+        residual = self.residual_head(torch.cat([input_rgb, output_t, output_r], dim=1)) * 0.25
+        return output_t, output_r, residual, base_t, mask, delta_t
+
+
 class ConvLayer(torch.nn.Sequential):
     def __init__(self, conv, in_channels, out_channels, kernel_size, stride, padding=None, dilation=1, norm=None, act=None):
         super(ConvLayer, self).__init__()

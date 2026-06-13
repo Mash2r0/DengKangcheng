@@ -1,6 +1,6 @@
-# 图像反射去除课程项目执行方案 v0.2
+# 图像反射去除课程项目执行方案 v0.3
 
-依据文件：`docs/2026-DIP课程项目-RR.pptx`、`README_DIP26.md`、当前 ERRNet 代码仓库、`workspace/RR_literature_survey.md`。
+依据文件：`docs/2026-DIP课程项目-RR.pptx`、`README_DIP26.md`、当前 ERRNet 代码仓库、`workspace/RR_literature_survey.md`、`workspace/results/r3lite_result_analysis.md`、`workspace/results/checkpoint_sweep_ablation_report.md`。
 
 DDL：2026-06-16 17:00，邮件发送至 `qxiang24@m.fudan.edu.cn`，主题 `DIP课程论文-学号-姓名`。
 
@@ -23,6 +23,17 @@ DDL：2026-06-16 17:00，邮件发送至 `qxiang24@m.fudan.edu.cn`，主题 `DIP
 - conda 环境名为 `errnet`。
 - `datasets/prepare_test_data.py` 和 `datasets/prepare_train_data.py` 已运行。
 - 预训练权重存在：`checkpoints/errnet/errnet_060_00463920.pt`。
+- Baseline 已完成多测试集评测，结果见 `workspace/results/metrics_baseline.md` 和 `测试结果.md`。
+- `ERRNet-R3Lite` 已实现并完成 smoke test。
+- `ERRNet-R3Lite` scratch aligned pretraining 已完成，主要 checkpoint：
+  - `checkpoints/errnet_r3lite_scratch/errnet_055_00425260.pt`
+  - `checkpoints/errnet_r3lite_scratch/errnet_060_00463920.pt`
+  - `checkpoints/errnet_r3lite_scratch/errnet_latest.pt`
+- `ERRNet-R3Lite` unaligned finetuning 已完成，主要 checkpoint：
+  - `checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_075_00583650.pt`
+  - `checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_080_00623560.pt`
+  - `checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_latest.pt`
+- 已完成 checkpoint sweep 与短程 loss ablation，结论见 `workspace/results/checkpoint_sweep_ablation_report.md`。
 - 处理后的主要数据集已在位：
   - `testdata_CEILNET_table2`：100 张。
   - `real20`：20 张。
@@ -34,32 +45,34 @@ DDL：2026-06-16 17:00，邮件发送至 `qxiang24@m.fudan.edu.cn`，主题 `DIP
   - VOC 处理图像：15287 张，训练列表实际使用 7643 张。
   - DSLR unaligned train：250 张。
 
-注意：当前 worktree 已有 `.gitignore` 和 `datasets/prepare_test_data.py` 的未提交修改，后续不要误覆盖。
+注意：当前 worktree 已有模型实现、实验脚本、结果目录和部分 notebook checkpoint 的未提交/未跟踪内容，后续不要误覆盖。
 
 ## 3. 总体技术路线
 
-采用“先闭环，后改进，再统一产物”的路线：
+采用“已闭环实验结果为依据，完成最终交付”的路线：
 
-1. 建立 baseline 闭环
-   - 使用课程提供的 ERRNet 预训练权重跑完整测试集。
-   - 将 stdout 指标、输出图像、运行参数统一保存，作为论文 baseline 表格。
+1. 固化 baseline 与 improved 定量结果
+   - Baseline 使用课程/ERRNet checkpoint：`checkpoints/errnet/errnet_060_00463920.pt`。
+   - Improved 使用已完成的 `ERRNet-R3Lite` 两阶段训练结果。
+   - 所有主测试集指标以 `测试结果.md` 和 `workspace/results/checkpoint_sweep_ablation_report.md` 为准。
 
-2. 复现/微调 baseline
-   - 优先从 `checkpoints/errnet/errnet_060_00463920.pt` 出发。
-   - 如 GPU 时间允许，运行 aligned 训练或短程 finetune；如时间不足，使用提供权重作为复现 baseline，并说明来源和命令。
+2. 选择最终 checkpoint
+   - 若论文主表强调 PSNR：使用 `aligned60`，即 `checkpoints/errnet_r3lite_scratch/errnet_060_00463920.pt`。
+   - 若论文主表强调真实场景结构/视觉质量：使用 `unaligned80`，即 `checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_080_00623560.pt`。
+   - 当前推荐最终 improved checkpoint：`unaligned80`；同时在论文中报告 `aligned60` 是平均 PSNR 最优的 R3Lite checkpoint。
 
-3. 实现轻量改进方法
-   - 不换大模型，不引入扩散/Transformer 等显著增加训练成本的方法。
-   - 基于 DSRNet、IBCLN、Beyond Linearity、Absorption Effect 和 Physically-Based Training Images 的调查结果，将最终改进方法确定为 `ERRNet-R3Lite`。
-   - 改进方向为：ERRNet 主干 + reflection 辅助分支 + learnable residual reconstruction + 非线性/物理启发合成增强。
-   - 本地 RTX 5070 Ti 16G 支持 improved 从头训练；同时保留从 baseline checkpoint 局部加载/finetune 的备选路径。
+3. 方法叙述定位
+   - `ERRNet-R3Lite` 作为主要改进方法：ERRNet 主干 + reflection 辅助分支 + learnable residual reconstruction + mixed synthesis。
+   - 结果不能表述为“全面超越 baseline”；应表述为“在 postcard、wild/sir2 的结构指标上改善明显，但在 CEILNet synthetic 和 objects 上存在保真度退化”。
+   - 后续不再继续做短程全局 loss 权重搜索，因为 `lambda_rec/lambda_r/lambda_excl` ablation 未带来收益。
 
-4. 做统一评测和可视化
+4. 完成统一可视化和自采数据
    - 同一测试集、同一 resize/预处理、同一指标函数。
    - 输出 CSV/Markdown 表格、样例拼图和论文可用图片。
+   - 尽快补齐自采 5 组近似配对图像；若不能严格配对，则只作为定性展示并明确说明。
 
 5. 完成论文与 PPT
-   - 论文强调方法动机、轻量改进、训练成本、定量/定性分析。
+   - 论文强调方法动机、轻量改进、训练成本、定量/定性分析和失败案例。
    - PPT 控制为 8-12 页，覆盖背景、baseline、改进、实验、结论。
 
 ## 4. 改进方法设计：ERRNet-R3Lite
@@ -133,7 +146,18 @@ baseline ERRNet 只输出：
 - `lambda_r = 0.1`
 - `lambda_excl = 0.01`
 
-若 PSNR 下降或背景边缘变弱，优先降低 `lambda_excl` 到 `0.005`；若输出仍残留明显反射，优先提高 `lambda_rec` 到 `0.3`。
+已完成短程 loss ablation：
+
+- `lambda_rec=0.10, lambda_r=0.05, lambda_excl=0.005`
+- `lambda_rec=0.05, lambda_r=0.05, lambda_excl=0.000`
+- `lambda_rec=0.10, lambda_r=0.00, lambda_excl=0.005`
+
+结论：三组短程 continuation 均未超过 `aligned60` reference，平均 PSNR 下降约 `0.11-0.13 dB`，SSIM 下降约 `0.0005-0.0008`。因此后续不再把时间投入到继续微调全局 `lambda_rec/lambda_r/lambda_excl`，而是把它作为报告中的 ablation 结果：单纯全局权重搜索不能解决 fidelity 下降问题。
+
+下一步如继续做方法改进，优先方向改为：
+
+- reflection confidence / mask-weighted loss：用 `abs(I - T)` 或 synthetic `target_r` 生成 soft reflection mask，只在反射区域强化重建/分离约束，在非反射区域保护 transmission 细节。
+- curriculum mixed synthesis：先用原 CEILNet 风格合成稳定训练，再逐步引入 mixed synthesis，避免训练初期分布过复杂。
 
 ### 4.5 非线性/物理启发合成增强
 
@@ -153,7 +177,7 @@ baseline ERRNet 只输出：
 
 ### 4.6 代码落点
 
-预计修改：
+已完成主要修改：
 
 - `options/errnet/train_options.py`
   - 增加 `--lambda_rec`
@@ -178,36 +202,37 @@ baseline ERRNet 只输出：
   - 增加 `ReflectionSythesis_3`。
   - 增加 `--synthesis_model mixed` 的选择逻辑。
 
-- 新增评测/汇总脚本，建议放在 `tools/`：
-  - `tools/eval_all.py`：批量跑所有数据集并输出 CSV/Markdown。
-  - `tools/make_visual_grid.py`：生成 input/baseline/improved/gt 拼图。
+- 新增实验脚本：
+  - `workspace/scripts/eval_r3lite_checkpoints.py`：批量评测 checkpoint 并输出 CSV/Markdown。
+  - `workspace/scripts/summarize_eval_outputs.py`：从已保存输出图像恢复指标表。
+
+待补充脚本：
+
+- `workspace/scripts/make_visual_grid.py`：生成 input/baseline/improved/gt 拼图。
 
 ## 5. 实验设计
 
 ### 5.1 方法对比
 
-至少比较两组：
+最终论文至少比较两组，建议报告三组：
 
 1. Baseline：ERRNet 官方/课程 checkpoint
    - `checkpoints/errnet/errnet_060_00463920.pt`
 
-2. Improved：ERRNet-R3Lite finetune
-   - 从 baseline checkpoint finetune。
-   - 只局部加载兼容层；6-channel output head 和 residual head 随机初始化。
-   - 保存至 `checkpoints/errnet_r3lite/`。
+2. Improved-A：ERRNet-R3Lite aligned scratch
+   - 推荐 checkpoint：`checkpoints/errnet_r3lite_scratch/errnet_060_00463920.pt`
+   - 平均 PSNR 在 R3Lite sweep 中最高，适合作为 pixel-fidelity 对照。
 
-可选第三组：
+3. Improved-B：ERRNet-R3Lite unaligned finetuning
+   - 推荐 checkpoint：`checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_080_00623560.pt`
+   - 平均 SSIM/NCC 最高，且在 `postcard`、`wild`、`sir2_withgt` 更符合真实场景结构改善。
+   - 当前建议作为最终 improved 主模型。
 
-3. Improved-from-scratch：ERRNet-R3Lite 从头训练
-   - 利用本地 RTX 5070 Ti 16G 运行完整 aligned 训练，作为更有说服力的改进模型。
-   - 训练成本预计与 baseline 同量级，优先安排夜间长任务。
-   - 与 baseline checkpoint 和 ERRNet-R3Lite finetune 一起比较，区分“训练策略收益”和“方法收益”。
+补充 ablation：
 
-可选第四组：
-
-4. Baseline finetune：原始 loss 从同一 checkpoint 短程 finetune
-   - 用于证明提升来自改进 loss，而不是单纯多训练。
-   - 如果时间不足，此项作为 ablation 可省略。
+4. Loss-weight ablation
+   - 三组短程 continuation 均未优于 `aligned60`。
+   - 作为负结果写入报告，用来说明“继续调全局 loss 权重不是有效改进方向”。
 
 ### 5.2 测试集
 
@@ -263,70 +288,81 @@ improved 示例：
 conda run -n errnet python test_errnet.py --name errnet_r3lite --dataset ceilnet_table2 -r --icnn_path checkpoints/errnet_r3lite/latest.pt --hyper --inet errnet_r3lite
 ```
 
-后续会用 `tools/eval_all.py` 把这些命令自动化，输出：
+后续统一使用 `workspace/scripts/eval_r3lite_checkpoints.py` 和已有 `test_errnet.py` 生成/复查结果，输出：
 
 ```text
 workspace/results/metrics_baseline.csv
 workspace/results/metrics_errnet_r3lite.csv
 workspace/results/metrics_compare.md
+workspace/results/checkpoint_sweep/combined_checkpoint_sweep.csv
+workspace/results/ablation_loss/eval/checkpoint_sweep.csv
 ```
 
 ## 6. 训练计划
 
 ### 6.1 Baseline 复现
 
-优先级：
+状态：已完成 baseline 测试集评测。后续只在需要复查结果或补自采数据时重新运行测试命令。
 
-1. 先用预训练权重跑评测，保证指标和 README 表格接近。
-2. 若 GPU 时间充足，再执行原始 aligned 训练：
-
-```powershell
-conda run -n errnet python train_errnet.py --name errnet_reproduce --hyper
-```
-
-3. 若有时间再执行 unaligned finetune：
+保留命令：
 
 ```powershell
-conda run -n errnet python train_errnet_unaligned.py --name errnet_unaligned_ft --hyper -r --icnn_path checkpoints/errnet/errnet_060_00463920.pt --unaligned_loss vgg
+conda run -n errnet python test_errnet.py --name errnet --dataset ceilnet_table2 -r --icnn_path checkpoints/errnet/errnet_060_00463920.pt --hyper --result_dir results_baseline
 ```
+
+不再安排重新训练 baseline。课程项目中 baseline 使用提供 checkpoint，并在报告中说明 checkpoint 来源。
 
 ### 6.2 Improved 训练
 
-由于本地有 RTX 5070 Ti 16G，可以把 improved 从头训练列为可选主实验路径；同时保留短程 finetune 作为快速验证和时间兜底。
+状态：已完成 `ERRNet-R3Lite` 两阶段训练，不再把继续训练作为主线任务。
 
-#### 6.2.1 快速验证：从 baseline checkpoint finetune
+已完成训练：
 
-```powershell
-conda run -n errnet python train_errnet.py --name errnet_r3lite --hyper -r --icnn_path checkpoints/errnet/errnet_060_00463920.pt --inet errnet_r3lite --synthesis_model mixed --lambda_rec 0.2 --lambda_r 0.1 --lambda_excl 0.01
-```
-
-由于 output head 与 baseline 不完全兼容，加载 checkpoint 时需要支持 partial load：兼容层加载 baseline，新增 head 随机初始化。如果训练脚本仍固定跑 60 epoch，代码实现时需要增加 `--nEpochs` 生效或新增短程 finetune 脚本，建议先跑 10-20 epoch 观察验证集结果。
-
-#### 6.2.2 可选主实验：ERRNet-R3Lite 从头训练
-
-从头训练命令：
+- aligned scratch：
 
 ```powershell
-conda run -n errnet python train_errnet.py --name errnet_r3lite_scratch --hyper --inet errnet_r3lite --synthesis_model mixed --lambda_rec 0.2 --lambda_r 0.1 --lambda_excl 0.01
+python train_errnet.py --name errnet_r3lite_scratch --hyper --inet errnet_r3lite --synthesis_model mixed --lambda_rec 0.2 --lambda_r 0.1 --lambda_excl 0.01 --nEpochs 60 --nThreads 0 --display_id 0 --save_epoch_freq 5 --no-verbose
 ```
 
-建议训练策略：
-
-- 先运行 debug/smoke test，确认新增损失没有 NaN、显存可承受。
-- 再按 baseline 的 60 epoch aligned 训练协议完整训练。
-- 若训练时间允许，再从 scratch checkpoint 继续运行 unaligned finetune：
+- unaligned finetuning：
 
 ```powershell
-conda run -n errnet python train_errnet_unaligned.py --name errnet_r3lite_scratch_unaligned_ft --hyper -r --icnn_path checkpoints/errnet_r3lite_scratch/latest.pt --inet errnet_r3lite --unaligned_loss vgg --synthesis_model mixed --lambda_rec 0.2 --lambda_r 0.1 --lambda_excl 0.01
+python train_errnet_unaligned.py --name errnet_r3lite_scratch_unaligned_ft --hyper -r --icnn_path checkpoints/errnet_r3lite_scratch/errnet_latest.pt --inet errnet_r3lite --synthesis_model mixed --unaligned_loss vgg --lambda_rec 0.2 --lambda_r 0.1 --lambda_excl 0.01 --nEpochs 80 --nThreads 0 --display_id 0 --save_epoch_freq 5 --no-verbose
 ```
 
-实现时需要确保 `train_errnet_unaligned.py` 也能解析并使用新增 loss 参数；对 unaligned 数据默认启用 `L_rec` 和 `L_excl`，不启用 `L_r`。
+最终推荐 checkpoint：
 
-建议保存：
+- 主模型：`checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_080_00623560.pt`
+- PSNR 对照：`checkpoints/errnet_r3lite_scratch/errnet_060_00463920.pt`
 
-- latest checkpoint
-- best PSNR checkpoint
-- best SSIM checkpoint
+### 6.3 Loss Ablation
+
+状态：已完成短程诊断，不再继续扩大该方向。
+
+已完成三组：
+
+- `rec=0.10, r=0.05, excl=0.005`
+- `rec=0.05, r=0.05, excl=0`
+- `rec=0.10, r=0, excl=0.005`
+
+结论：短程 continuation 没有超过 `aligned60`，所以后续不建议继续搜索全局 loss 权重。
+
+### 6.4 后续可选方法改进
+
+如果还要继续做代码级改进，优先级如下：
+
+1. `ReflectionConfidence-R3Lite`
+   - 新增 soft reflection confidence map，用合成数据的 `abs(I - T)` 或 `target_r` 监督。
+   - 用 mask 加权 `L_rec/L_r/L_excl`，反射区域强约束，非反射区域保护背景。
+   - 预计更能解决 `objects/ceilnet_table2` 保真度下降问题。
+
+2. `Curriculum Mixed Synthesis`
+   - 训练前半段使用 `ceilnet` synthesis，后半段逐步引入 `mixed`。
+   - 目标是缓解当前 mixed 从 epoch 0 开始导致的 synthetic/object fidelity 退化。
+
+3. 轻量 cascaded refinement
+   - 增加第二阶段 residual refiner：输入 `[I, T_hat, R_hat]`，输出 `delta_T`。
+   - 成本较高，只有在论文/PPT基本完成后再考虑。
 
 ## 7. 结果产物规范
 
@@ -340,6 +376,14 @@ workspace/
     metrics_baseline.csv
     metrics_errnet_r3lite.csv
     metrics_compare.md
+    r3lite_result_analysis.md
+    checkpoint_sweep_ablation_report.md
+    checkpoint_sweep/
+    ablation_loss/
+  scripts/
+    eval_r3lite_checkpoints.py
+    summarize_eval_outputs.py
+    make_visual_grid.py
   figures/
     qualitative_ceilnet.png
     qualitative_real20.png
@@ -413,28 +457,32 @@ workspace/
 
 ### 2026-06-11
 
-- 完成执行方案。
-- 跑通 baseline 所有测试集，生成第一版指标表。
-- 检查输出图像质量和结果目录。
+- 已完成执行方案初版。
+- 已跑通 baseline 所有测试集，生成第一版指标表。
+- 已检查输出图像质量和结果目录。
 
 ### 2026-06-12
 
-- 实现 ERRNet-R3Lite 网络、损失项、参数开关和 mixed synthesis。
-- 完成 smoke test：小数据/短 epoch 确认 loss 正常、checkpoint 可保存。
-- 开始短程 finetune；若 smoke test 稳定，夜间启动 `errnet_r3lite_scratch` 从头训练。
+- 已实现 ERRNet-R3Lite 网络、损失项、参数开关和 mixed synthesis。
+- 已完成 smoke test：小数据/短 epoch 确认 loss 正常、checkpoint 可保存。
+- 已启动并完成 `errnet_r3lite_scratch` 从头训练。
 
 ### 2026-06-13
 
-- 完成 improved finetune 主要训练。
-- 检查 `errnet_r3lite_scratch` 训练进度；如果结果稳定，继续完整训练，否则回退到 finetune 版本作为主结果。
-- 跑所有测试集评测。
-- 初步比较 baseline 与 improved，必要时调整 `lambda_rec`、`lambda_r`、`lambda_excl`。
+- 已完成 improved 两阶段训练。
+- 已完成 baseline/improved 总表分析。
+- 已完成 checkpoint sweep 和 loss ablation。
+- 已确定最终 checkpoint 推荐：主模型 `unaligned80`，PSNR 对照 `aligned60`。
 
 ### 2026-06-14
 
 - 采集并整理 5 组自采照片。
 - 完成自采数据评测与可视化。
-- 生成论文用图表。
+- 生成论文用核心图表：
+  - baseline vs aligned60 vs unaligned80 定量表。
+  - postcard/wild/sir2/objects/ceilnet 代表样例拼图。
+  - loss ablation 负结果表。
+- 若时间允许，补一个 reflection confidence / mask-weighted loss 的设计小节，作为未来工作或可选扩展，不再默认训练。
 
 ### 2026-06-15
 
@@ -450,17 +498,15 @@ workspace/
 ## 11. 风险与备选方案
 
 1. GPU 时间不足
-   - 直接使用课程 baseline checkpoint 做 baseline。
-   - Improved 只做 checkpoint finetune 10 epoch。
-   - 如果 finetune 来不及，保留代码实现和小规模训练结果，但论文要明确训练预算。
-   - RTX 5070 Ti 16G 支持尝试从头训练，但从头训练不是唯一交付路径；若完整 scratch 训练未收敛，使用 finetune 结果提交。
+   - 当前主要训练已完成，GPU 风险下降。
+   - 后续只保留评测、自采图和可视化任务；不再依赖新的长训练。
+   - 若新增 reflection confidence 改进来不及，只作为未来工作写入论文。
 
 2. 改进指标不稳定
-   - 若背景边缘被削弱，降低 `lambda_excl`。
-   - 若重建约束过强导致输出偏向输入，降低 `lambda_rec`。
-   - 若 reflection 分支不稳定，先关闭或降低 `lambda_r`。
-   - 保留“可视化改善但 PSNR 小幅下降”的分析，因为反射去除中视觉质量和 full-reference 指标可能不完全一致。
-   - 增加 baseline-finetune ablation，避免把训练轮数差异误当作方法差异。
+   - 当前结果已经确认：R3Lite 不全面优于 baseline，但在 `postcard` 和部分真实结构指标上有清晰收益。
+   - 论文中不宣称全面 SOTA，只强调数据集相关收益、失败案例和原因分析。
+   - 用 checkpoint sweep 解释：`aligned60` 更偏 PSNR，`unaligned80` 更偏 SSIM/NCC 和真实场景适配。
+   - 用 loss ablation 说明：简单调全局 loss 权重没有解决 fidelity 退化，后续应做位置感知/加权 loss。
 
 3. 自采照片无法获得严格 GT
    - 优先自己拍摄配对图。
@@ -472,12 +518,16 @@ workspace/
 
 ## 12. 下一步立即执行清单
 
-- [ ] 跑 baseline 五个主测试集，保存指标。
-- [ ] 新增 `my5` 数据集支持。
-- [ ] 实现 `errnet_r3lite`、`lambda_rec`、`lambda_r`、`lambda_excl`。
-- [ ] 实现 `--synthesis_model mixed` 和 `ReflectionSythesis_3`。
-- [ ] 新增批量评测和可视化拼图脚本。
-- [ ] 训练 `errnet_r3lite` 短程版本。
-- [ ] 启动并跟踪 `errnet_r3lite_scratch` 从头训练。
-- [ ] 生成对比表和论文图片。
-- [ ] 撰写论文与 PPT。
+- [x] 跑 baseline 五个主测试集，保存指标。
+- [x] 实现 `errnet_r3lite`、`lambda_rec`、`lambda_r`、`lambda_excl`。
+- [x] 实现 `--synthesis_model mixed` 和 `ReflectionSythesis_3`。
+- [x] 完成 `errnet_r3lite_scratch` aligned 从头训练。
+- [x] 完成 `errnet_r3lite_scratch_unaligned_ft` 第二阶段训练。
+- [x] 完成 checkpoint sweep。
+- [x] 完成 `lambda_rec/lambda_r/lambda_excl` 短程 ablation。
+- [ ] 新增或整理 `my5` 自采数据支持。
+- [ ] 生成 baseline/aligned60/unaligned80 对比表和论文图片。
+- [ ] 实现或手工生成可视化拼图。
+- [ ] 撰写论文初稿。
+- [ ] 制作 PPT 初稿。
+- [ ] 上传最终权重并整理 README/运行命令。

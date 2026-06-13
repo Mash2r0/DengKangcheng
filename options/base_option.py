@@ -19,6 +19,7 @@ class BaseOptions():
         self.parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints', help='models are saved here')
         self.parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
         self.parser.add_argument('--resume_epoch', '-re', type=int, default=None, help='checkpoint to use. (default: latest')
+        self.parser.add_argument('--reset_epoch_on_load', action='store_true', help='reset epoch/iteration counters after loading a checkpoint')
         self.parser.add_argument('--seed', type=int, default=2018, help='random seed to use. Default=2018')
 
         # for setting input

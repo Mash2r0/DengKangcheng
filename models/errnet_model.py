@@ -242,6 +242,10 @@ class ERRNetModel(ERRNetBase):
         
         self.net_i = arch.__dict__[self.opt.inet](in_channels, 3).to(self.device)
         networks.init_weights(self.net_i, init_type=opt.init_type) # using default initialization as EDSR
+        if hasattr(self.net_i, 'init_gated_identity'):
+            self.net_i.init_gated_identity()
+        if self.isTrain and hasattr(self.net_i, 'set_base_requires_grad') and not opt.no_freeze_gated_base:
+            self.net_i.set_base_requires_grad(False)
         self.edge_map = EdgeMap(scale=1).to(self.device)
 
         if self.isTrain:
@@ -273,7 +277,11 @@ class ERRNetModel(ERRNetBase):
             self._init_optimizer([self.optimizer_D])
 
             # initialize optimizers
-            self.optimizer_G = torch.optim.Adam(self.net_i.parameters(), 
+            trainable_g_params = [p for p in self.net_i.parameters() if p.requires_grad]
+            if len(trainable_g_params) == 0:
+                trainable_g_params = list(self.net_i.parameters())
+
+            self.optimizer_G = torch.optim.Adam(trainable_g_params,
                 lr=opt.lr, betas=(0.9, 0.999), weight_decay=opt.wd)
 
             self._init_optimizer([self.optimizer_G])
@@ -306,6 +314,8 @@ class ERRNetModel(ERRNetBase):
         self.loss_rec = None
         self.loss_r = None
         self.loss_excl = None
+        self.loss_base = None
+        self.loss_mask = None
 
         if self.opt.lambda_gan > 0:
             self.loss_G_GAN = self.loss_dic['gan'].get_g_loss(
@@ -340,6 +350,22 @@ class ERRNetModel(ERRNetBase):
                 self.loss_excl = self.loss_dic['r3_excl'].get_loss(
                     self.output_i, self.output_r)
                 self.loss_G += self.loss_excl * self.opt.lambda_excl
+
+        mask_target = self._reflection_mask_target()
+        if self.output_base is not None and self.opt.lambda_base > 0:
+            if mask_target is not None:
+                protect_mask = 1.0 - mask_target.detach()
+            elif self.output_mask is not None:
+                protect_mask = 1.0 - self.output_mask.detach()
+            else:
+                protect_mask = torch.ones_like(self.output_i[:, :1, :, :])
+            self.loss_base = self._weighted_l1(
+                self.output_i, self.output_base.detach(), protect_mask)
+            self.loss_G += self.loss_base * self.opt.lambda_base
+
+        if self.output_mask is not None and mask_target is not None and self.opt.lambda_mask > 0:
+            self.loss_mask = F.l1_loss(self.output_mask, mask_target.detach())
+            self.loss_G += self.loss_mask * self.opt.lambda_mask
         
         self.loss_G.backward()
 
@@ -360,15 +386,27 @@ class ERRNetModel(ERRNetBase):
         self.output_r = None
         self.output_residual = None
         self.output_reconstruction = None
+        self.output_base = None
+        self.output_mask = None
+        self.output_delta = None
 
         if isinstance(net_output, (tuple, list)):
             output_i, output_r, output_residual = net_output[:3]
+            output_base = net_output[3] if len(net_output) > 3 else None
+            output_mask = net_output[4] if len(net_output) > 4 else None
+            output_delta = net_output[5] if len(net_output) > 5 else None
             if output_i.shape[2:] != self.input.shape[2:]:
                 h = min(output_i.size(2), self.input.size(2))
                 w = min(output_i.size(3), self.input.size(3))
                 output_i = output_i[:, :, :h, :w]
                 output_r = output_r[:, :, :h, :w]
                 output_residual = output_residual[:, :, :h, :w]
+                if output_base is not None:
+                    output_base = output_base[:, :, :h, :w]
+                if output_mask is not None:
+                    output_mask = output_mask[:, :, :h, :w]
+                if output_delta is not None:
+                    output_delta = output_delta[:, :, :h, :w]
                 self.input = self.input[:, :, :h, :w]
                 if self.target_t is not None and not isinstance(self.target_t, int):
                     self.target_t = self.target_t[:, :, :h, :w]
@@ -376,6 +414,9 @@ class ERRNetModel(ERRNetBase):
                     self.target_r = self.target_r[:, :, :h, :w]
             self.output_r = output_r
             self.output_residual = output_residual
+            self.output_base = output_base
+            self.output_mask = output_mask
+            self.output_delta = output_delta
             self.output_reconstruction = torch.clamp(output_i + output_r + output_residual, 0, 1)
         else:
             output_i = net_output
@@ -383,6 +424,30 @@ class ERRNetModel(ERRNetBase):
         self.output_i = output_i
 
         return output_i
+
+    def _reflection_mask_target(self):
+        if self.target_t is None or isinstance(self.target_t, int):
+            return None
+        h = min(self.input.size(2), self.target_t.size(2))
+        w = min(self.input.size(3), self.target_t.size(3))
+        input_i = self.input[:, :, :h, :w]
+        target_t = self.target_t[:, :, :h, :w]
+        mask = (input_i - target_t).abs().mean(dim=1, keepdim=True)
+        if self.target_r is not None and not isinstance(self.target_r, int) and self.issyn:
+            target_r = self.target_r[:, :, :h, :w]
+            mask = torch.max(mask, target_r.abs().mean(dim=1, keepdim=True))
+        scale = max(float(self.opt.mask_reflect_scale), 1e-6)
+        return torch.clamp(mask / scale, 0, 1)
+
+    @staticmethod
+    def _weighted_l1(pred, target, weight):
+        h = min(pred.size(2), target.size(2), weight.size(2))
+        w = min(pred.size(3), target.size(3), weight.size(3))
+        pred = pred[:, :, :h, :w]
+        target = target[:, :, :h, :w]
+        weight = weight[:, :, :h, :w]
+        denom = weight.sum() * pred.size(1) + 1e-6
+        return (torch.abs(pred - target) * weight).sum() / denom
         
     def optimize_parameters(self):
         self._train()
@@ -416,6 +481,10 @@ class ERRNetModel(ERRNetBase):
             ret_errors['RLayer'] = self.loss_r.item()
         if self.loss_excl is not None:
             ret_errors['Excl'] = self.loss_excl.item()
+        if self.loss_base is not None:
+            ret_errors['Base'] = self.loss_base.item()
+        if self.loss_mask is not None:
+            ret_errors['Mask'] = self.loss_mask.item()
 
         return ret_errors
 
@@ -429,6 +498,12 @@ class ERRNetModel(ERRNetBase):
             ret_visuals['output_r'] = tensor2im(self.output_r).astype(np.uint8)
             ret_visuals['r3_residual'] = tensor2im(self.output_residual + 0.5).astype(np.uint8)
             ret_visuals['reconstruction'] = tensor2im(self.output_reconstruction).astype(np.uint8)
+        if self.output_base is not None:
+            ret_visuals['baseline_t0'] = tensor2im(self.output_base).astype(np.uint8)
+        if self.output_mask is not None:
+            ret_visuals['reflection_mask'] = tensor2im(self.output_mask).astype(np.uint8)
+        if self.output_delta is not None:
+            ret_visuals['delta_t'] = tensor2im(self.output_delta + 0.5).astype(np.uint8)
 
         return ret_visuals       
 
@@ -465,6 +540,11 @@ class ERRNetModel(ERRNetBase):
                 print('Resume netD ...')
                 model.netD.load_state_dict(state_dict['netD'])
                 model.optimizer_D.load_state_dict(state_dict['opt_d'])
+
+        if getattr(model.opt, 'reset_epoch_on_load', False):
+            print('[i] reset epoch/iteration counters after checkpoint load')
+            model.epoch = 0
+            model.iterations = 0
             
         print('Resume from epoch %d, iteration %d' % (model.epoch, model.iterations))
         return state_dict
