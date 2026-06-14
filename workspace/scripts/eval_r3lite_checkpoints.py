@@ -28,11 +28,14 @@ DEFAULT_DATASETS = [
 ]
 
 
+BASELINE_CHECKPOINT = ("baseline", "checkpoints/errnet/errnet_060_00463920.pt", "errnet")
+
+
 DEFAULT_CHECKPOINTS = [
-    ("aligned55", "checkpoints/errnet_r3lite_scratch/errnet_055_00425260.pt"),
-    ("aligned60", "checkpoints/errnet_r3lite_scratch/errnet_060_00463920.pt"),
-    ("unaligned75", "checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_075_00583650.pt"),
-    ("unaligned80", "checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_080_00623560.pt"),
+    ("aligned55", "checkpoints/errnet_r3lite_scratch/errnet_055_00425260.pt", "errnet_r3lite"),
+    ("aligned60", "checkpoints/errnet_r3lite_scratch/errnet_060_00463920.pt", "errnet_r3lite"),
+    ("unaligned75", "checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_075_00583650.pt", "errnet_r3lite"),
+    ("unaligned80", "checkpoints/errnet_r3lite_scratch_unaligned_ft/errnet_080_00623560.pt", "errnet_r3lite"),
 ]
 
 
@@ -41,7 +44,7 @@ def quiet_progress_bar(current, total, msg=None):
         print(msg or "")
 
 
-def make_opt(name, checkpoint_path, nthreads):
+def make_opt(name, checkpoint_path, inet, nthreads):
     argv = [
         sys.argv[0],
         "--name",
@@ -51,7 +54,7 @@ def make_opt(name, checkpoint_path, nthreads):
         checkpoint_path,
         "--hyper",
         "--inet",
-        "errnet_r3lite",
+        inet,
         "--display_id",
         "0",
         "--nThreads",
@@ -113,11 +116,13 @@ def main():
     argp.add_argument("--data_root", default="./datasets/processed_data")
     argp.add_argument("--datasets", nargs="+", default=DEFAULT_DATASETS, choices=sorted(EVAL_DATASETS))
     argp.add_argument("--checkpoint_labels", nargs="+", default=None)
+    argp.add_argument("--include_baseline", action="store_true", help="also evaluate ERRNet baseline checkpoint")
+    argp.add_argument("--inet", default=None, help="architecture name for extra checkpoints, e.g. errnet_r3lite_gated")
     argp.add_argument(
         "--extra_checkpoint",
         action="append",
         default=[],
-        help="extra checkpoint in label=path form; can be repeated",
+        help="extra checkpoint in label=path form; can be repeated. Use --inet to choose its architecture.",
     )
     argp.add_argument("--nThreads", type=int, default=0)
     argp.add_argument("--no_save_images", action="store_true")
@@ -134,25 +139,30 @@ def main():
     rows = []
     cudnn.benchmark = True
 
-    checkpoints = list(DEFAULT_CHECKPOINTS)
+    checkpoints = []
+    if args.include_baseline:
+        checkpoints.append(BASELINE_CHECKPOINT)
+    checkpoints.extend(DEFAULT_CHECKPOINTS)
+
+    extra_inet = args.inet or "errnet_r3lite"
     for item in args.extra_checkpoint:
         if "=" not in item:
             raise ValueError(f"--extra_checkpoint must use label=path form: {item}")
         label, path = item.split("=", 1)
-        checkpoints.append((label, path))
+        checkpoints.append((label, path, extra_inet))
 
-    for label, checkpoint_path in checkpoints:
+    for label, checkpoint_path, inet in checkpoints:
         if args.checkpoint_labels and label not in args.checkpoint_labels:
             continue
         if not os.path.exists(checkpoint_path):
             print(f"[skip] {label}: {checkpoint_path}")
             continue
 
-        opt = make_opt(f"errnet_r3lite_{label}", checkpoint_path, args.nThreads)
+        opt = make_opt(f"{inet}_{label}", checkpoint_path, inet, args.nThreads)
         engine = Engine(opt)
 
         for dataset_key in args.datasets:
-            print(f"[eval] {label} / {dataset_key}")
+            print(f"[eval] {label} ({inet}) / {dataset_key}")
             spec, dataloader = build_eval_dataloader(opt, args.data_root, dataset_key)
             savedir = None if args.no_save_images else join(args.image_dir, label, spec["save_subdir"])
             meters = engine.eval(dataloader, dataset_name=spec["dataset_name"], savedir=savedir)
