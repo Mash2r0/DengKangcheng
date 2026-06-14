@@ -258,6 +258,115 @@ class GatedR3LiteNet(torch.nn.Module):
         return output_t, output_r, residual, base_t, mask, delta_t
 
 
+class DualExpertFusionNet(torch.nn.Module):
+    """Fuse two frozen reflection-removal experts with a trainable mask head."""
+    requires_expert_paths = True
+
+    def __init__(self, in_channels, n_feats, n_resblocks, norm=nn.BatchNorm2d,
+    se_reduction=None, res_scale=1, bottom_kernel_size=3, pyramid=False,
+    expert0_inet='errnet', expert1_inet='errnet_r3lite'):
+        super(DualExpertFusionNet, self).__init__()
+        self.expert0_inet = expert0_inet
+        self.expert1_inet = expert1_inet
+        self.expert0 = self._build_expert(
+            expert0_inet, in_channels, n_feats, n_resblocks, norm,
+            se_reduction, res_scale, bottom_kernel_size, pyramid)
+        self.expert1 = self._build_expert(
+            expert1_inet, in_channels, n_feats, n_resblocks, norm,
+            se_reduction, res_scale, bottom_kernel_size, pyramid)
+
+        self.mask_head = nn.Sequential(
+            nn.Conv2d(18, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),
+            nn.Sigmoid()
+        )
+
+    @staticmethod
+    def _build_expert(name, in_channels, n_feats, n_resblocks, norm,
+    se_reduction, res_scale, bottom_kernel_size, pyramid):
+        if name == 'errnet':
+            return DRNet(
+                in_channels, 3, n_feats, n_resblocks,
+                norm=norm, res_scale=res_scale, se_reduction=se_reduction,
+                bottom_kernel_size=bottom_kernel_size, pyramid=pyramid)
+        if name == 'errnet_r3lite':
+            return R3LiteNet(
+                in_channels, n_feats, n_resblocks,
+                norm=norm, res_scale=res_scale, se_reduction=se_reduction,
+                bottom_kernel_size=bottom_kernel_size, pyramid=pyramid)
+        if name == 'errnet_r3lite_gated':
+            return GatedR3LiteNet(
+                in_channels, n_feats, n_resblocks,
+                norm=norm, res_scale=res_scale, se_reduction=se_reduction,
+                bottom_kernel_size=bottom_kernel_size, pyramid=pyramid)
+        raise ValueError(
+            'Unsupported expert inet: %s. Use errnet, errnet_r3lite, or errnet_r3lite_gated.' % name)
+
+    def init_gated_identity(self, mask_bias=-4.0):
+        nn.init.zeros_(self.mask_head[-2].weight)
+        nn.init.constant_(self.mask_head[-2].bias, mask_bias)
+
+    def set_base_requires_grad(self, requires_grad):
+        for expert in (self.expert0, self.expert1):
+            for param in expert.parameters():
+                param.requires_grad = requires_grad
+
+    @staticmethod
+    def _state_icnn(state):
+        return state['icnn'] if isinstance(state, dict) and 'icnn' in state else state
+
+    def load_experts(self, expert0_state, expert1_state):
+        self.expert0.load_state_dict(self._state_icnn(expert0_state))
+        self.expert1.load_state_dict(self._state_icnn(expert1_state))
+        self.set_base_requires_grad(False)
+
+    @staticmethod
+    def _split_output(output):
+        if isinstance(output, (tuple, list)):
+            t = output[0]
+            r = output[1] if len(output) > 1 else torch.zeros_like(t)
+            residual = output[2] if len(output) > 2 else torch.zeros_like(t)
+            return t, r, residual
+        return output, torch.zeros_like(output), torch.zeros_like(output)
+
+    @staticmethod
+    def _crop_like(tensors):
+        h = min(t.size(2) for t in tensors)
+        w = min(t.size(3) for t in tensors)
+        return [t[:, :, :h, :w] for t in tensors]
+
+    def forward(self, x):
+        input_rgb = x[:, :3, :, :]
+
+        with torch.no_grad():
+            output0 = self.expert0(x)
+            output1 = self.expert1(x)
+
+        t0, _, _ = self._split_output(output0)
+        t1, r1, residual1 = self._split_output(output1)
+        input_rgb, t0, t1, r1, residual1 = self._crop_like([input_rgb, t0, t1, r1, residual1])
+        t0 = torch.clamp(t0, 0, 1)
+        t1 = torch.clamp(t1, 0, 1)
+
+        mask_input = torch.cat([
+            input_rgb,
+            t0,
+            t1,
+            (t1 - t0).abs(),
+            (input_rgb - t0).abs(),
+            (input_rgb - t1).abs(),
+        ], dim=1)
+        mask = self.mask_head(mask_input)
+        delta = t1 - t0
+        output_t = torch.clamp(t0 + mask * delta, 0, 1)
+        reconstruction = torch.clamp(output_t + r1 + residual1, 0, 1)
+        residual = reconstruction - output_t - r1
+        return output_t, r1, residual, t0, mask, delta
+
+
 class ConvLayer(torch.nn.Sequential):
     def __init__(self, conv, in_channels, out_channels, kernel_size, stride, padding=None, dilation=1, norm=None, act=None):
         super(ConvLayer, self).__init__()

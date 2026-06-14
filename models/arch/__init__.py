@@ -1,5 +1,5 @@
 # Add your custom network here
-from .default import DRNet, R3LiteNet, GatedR3LiteNet
+from .default import DRNet, R3LiteNet, GatedR3LiteNet, DualExpertFusionNet
 import torch.nn as nn
 
 
@@ -17,3 +17,7 @@ def errnet_r3lite(in_channels, out_channels, **kwargs):
 
 def errnet_r3lite_gated(in_channels, out_channels, **kwargs):
     return GatedR3LiteNet(in_channels, 256, 13, norm=None, res_scale=0.1, se_reduction=8, bottom_kernel_size=1, pyramid=True, **kwargs)
+
+
+def errnet_dual_fusion(in_channels, out_channels, **kwargs):
+    return DualExpertFusionNet(in_channels, 256, 13, norm=None, res_scale=0.1, se_reduction=8, bottom_kernel_size=1, pyramid=True, **kwargs)

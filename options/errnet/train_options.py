@@ -48,6 +48,16 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--lambda_mask', type=float, default=0.0, help='weight for reflection-confidence mask supervision in gated R3Lite')
         self.parser.add_argument('--mask_reflect_scale', type=float, default=0.2, help='scale for soft reflection mask from abs(input-target)')
         self.parser.add_argument('--no_freeze_gated_base', action='store_true', help='do not freeze the ERRNet-initialized baseline path in gated R3Lite')
+        self.parser.add_argument('--expert0_inet', type=str, default='errnet',
+            choices=['errnet', 'errnet_r3lite', 'errnet_r3lite_gated'],
+            help='network architecture for expert0 in dual-expert fusion')
+        self.parser.add_argument('--expert1_inet', type=str, default='errnet_r3lite',
+            choices=['errnet', 'errnet_r3lite', 'errnet_r3lite_gated'],
+            help='network architecture for expert1 in dual-expert fusion')
+        self.parser.add_argument('--expert0_path', type=str, default=None, help='baseline expert checkpoint for dual-expert fusion')
+        self.parser.add_argument('--expert1_path', type=str, default=None, help='R3Lite expert checkpoint for dual-expert fusion')
+        self.parser.add_argument('--fusion_mask_bias', type=float, default=-4.0, help='initial fusion mask bias; negative starts near baseline expert')
+        self.parser.add_argument('--gan_start_epoch', type=int, default=20, help='epoch to enable lambda_gan schedule; set negative to disable schedule')
         self.parser.add_argument('--synthesis_model', type=str, default='ceilnet',
             choices=['ceilnet', 'perceptual', 'physical', 'mixed'],
             help='synthetic reflection model for training data')

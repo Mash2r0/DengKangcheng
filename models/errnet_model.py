@@ -240,10 +240,27 @@ class ERRNetModel(ERRNetBase):
             self.vgg = losses.Vgg19(requires_grad=False).to(self.device)
             in_channels += 1472
         
-        self.net_i = arch.__dict__[self.opt.inet](in_channels, 3).to(self.device)
+        net_kwargs = {}
+        if self.opt.inet == 'errnet_dual_fusion':
+            net_kwargs['expert0_inet'] = opt.expert0_inet
+            net_kwargs['expert1_inet'] = opt.expert1_inet
+        self.net_i = arch.__dict__[self.opt.inet](in_channels, 3, **net_kwargs).to(self.device)
         networks.init_weights(self.net_i, init_type=opt.init_type) # using default initialization as EDSR
         if hasattr(self.net_i, 'init_gated_identity'):
-            self.net_i.init_gated_identity()
+            self.net_i.init_gated_identity(mask_bias=getattr(opt, 'fusion_mask_bias', -4.0))
+        if hasattr(self.net_i, 'load_experts'):
+            has_full_checkpoint = bool(opt.resume and opt.icnn_path)
+            has_expert_paths = bool(opt.expert0_path and opt.expert1_path)
+            if has_expert_paths:
+                expert0_state = _torch_load_compat(opt.expert0_path, map_location=torch.device('cpu'))
+                expert1_state = _torch_load_compat(opt.expert1_path, map_location=torch.device('cpu'))
+                self.net_i.load_experts(expert0_state, expert1_state)
+                print('[i] loaded dual experts: %s:%s | %s:%s' % (
+                    opt.expert0_inet, opt.expert0_path, opt.expert1_inet, opt.expert1_path))
+            elif getattr(self.net_i, 'requires_expert_paths', False) and not has_full_checkpoint:
+                raise ValueError(
+                    'errnet_dual_fusion requires --expert0_path and --expert1_path '
+                    'unless loading a full fusion checkpoint with -r --icnn_path.')
         if self.isTrain and hasattr(self.net_i, 'set_base_requires_grad') and not opt.no_freeze_gated_base:
             self.net_i.set_base_requires_grad(False)
         self.edge_map = EdgeMap(scale=1).to(self.device)
